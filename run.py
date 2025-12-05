@@ -27,7 +27,6 @@ def main():
         "streamlit",
         "run",
         app_path,
-        "--server.port=8501",
     ]
 
     # 运行 streamlit（会自己打开浏览器）
