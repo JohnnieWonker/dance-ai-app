@@ -24,7 +24,8 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller run.py --onefile --add-data "dance_ai_app;dance_ai_app" --hidden-import mediapipe --hidden-import cv2 --hidden-import pandas --hidden-import numpy --hidden-import plotly --hidden-import reportlab --noconsole
+          pyinstaller run.py --onefile --add-data "dance_ai_app;dance_ai_app" --hidden-import mediapipe --hidden-import cv2 --hidden-import pandas --hidden-import numpy --hidden-import plotly --hidden-import reportlab
+
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
