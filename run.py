@@ -1,8 +1,5 @@
 import os
 import sys
-import subprocess
-import time
-import webbrowser
 
 
 def resource_path(relative_path: str) -> str:
@@ -16,30 +13,25 @@ def resource_path(relative_path: str) -> str:
 
 
 def main():
-    port = "8501"
-
-    # 找到打包后的 pro_app.py 真实路径
+    # 找到打包后的 app 路径
     app_path = resource_path(os.path.join("dance_ai_app", "pro_app.py"))
 
-    # 以当前 EXE 自带的 Python 解释器运行 streamlit
-    cmd = [
-        sys.executable, "-m", "streamlit", "run",
+    # 切换到应用所在目录，避免相对路径问题
+    os.chdir(os.path.dirname(app_path))
+
+    # 重要：在当前进程里调用 streamlit 的 CLI 入口
+    from streamlit.web import cli as stcli
+
+    # 模拟命令行参数：streamlit run dance_ai_app/pro_app.py --server.port=8501
+    sys.argv = [
+        "streamlit",
+        "run",
         app_path,
-        "--server.headless=true",
-        f"--server.port={port}",
+        "--server.port=8501",
     ]
 
-    # 工作目录设为 pro_app.py 所在目录，避免相对路径问题
-    workdir = os.path.dirname(app_path)
-
-    # 启动子进程，不阻塞主程序
-    subprocess.Popen(cmd, cwd=workdir)
-
-    # 稍微等一下，让服务起来
-    time.sleep(2)
-
-    # 打开浏览器
-    webbrowser.open(f"http://localhost:{port}")
+    # 运行 streamlit（会自己打开浏览器）
+    sys.exit(stcli.main())
 
 
 if __name__ == "__main__":
