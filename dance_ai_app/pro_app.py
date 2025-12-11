@@ -490,18 +490,40 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
         return np.array([p.x, p.y], dtype=float)
 
     # 1) 空中横叉角度（以骨盆中心为顶点，左右踝为端点）
+    # 4) 空中最大横叉角（按你的想法：每侧髋部向下的线，与该侧腿的夹角之和）
     split_angles = []
     for i in range(f_start, f_end + 1):
-        lm = landmark_seq[i]
-        hl = get_xy(lm, LEFT_HIP)
-        hr = get_xy(lm, RIGHT_HIP)
-        la = get_xy(lm, LEFT_ANKLE)
-        ra = get_xy(lm, RIGHT_ANKLE)
-        if any(p is None for p in [hl, hr, la, ra]):
+        hip_l = _get_xy(landmark_seq[i], LEFT_HIP)
+        hip_r = _get_xy(landmark_seq[i], RIGHT_HIP)
+        f_ank = _get_xy(landmark_seq[i], front_ankle)
+        b_ank = _get_xy(landmark_seq[i], back_ankle)
+        if any(p is None for p in [hip_l, hip_r, f_ank, b_ank]):
             continue
-        pelvis = (hl + hr) / 2.0
-        split_angles.append(_angle(la, pelvis, ra))
-    split_angle = float(max(split_angles)) if split_angles else 0.0
+
+        # 从每个髋部往“图片正下方”延伸一小段
+        hip_l_down = hip_l + np.array([0.0, 1.0])
+        hip_r_down = hip_r + np.array([0.0, 1.0])
+
+        # 前腿 / 后腿各用自己那一侧的髋部和“向下”的点
+        if is_left_lead:
+            # 左腿在前
+            front_hip_xy, front_down = hip_l, hip_l_down
+            back_hip_xy,  back_down  = hip_r, hip_r_down
+        else:
+            # 右腿在前
+            front_hip_xy, front_down = hip_r, hip_r_down
+            back_hip_xy,  back_down  = hip_l, hip_l_down
+
+        # 前腿和“向下”的夹角
+        front_angle = _angle(f_ank, front_hip_xy, front_down)
+        # 后腿和“向下”的夹角
+        back_angle  = _angle(b_ank, back_hip_xy, back_down)
+
+        # 两条腿角度相加，表示这个瞬间的“横叉打开程度”
+        split_angles.append(front_angle + back_angle)
+
+    split_angle_max = float(max(split_angles)) if split_angles else 0.0
+
 
     # 2) 吸撩腿屈髋角（peak 帧：躯干与前腿的夹角）
     lm_peak = landmark_seq[peak_idx]
