@@ -495,28 +495,19 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
 
     for i in range(f_start, f_end + 1):
         lm = landmark_seq[i]
-        if lm is None:
-            continue
-
         hl = get_xy(lm, LEFT_HIP)
         hr = get_xy(lm, RIGHT_HIP)
         la = get_xy(lm, LEFT_ANKLE)
         ra = get_xy(lm, RIGHT_ANKLE)
 
-        # 缺点直接跳过
         if any(p is None for p in [hl, hr, la, ra]):
             print("Skipping as the critical point is missed (hips or ankle).")
             continue
 
-        # 从髋部向下（图片坐标 y 轴向下）
         hl_down = hl + np.array([0, 1.0])
         hr_down = hr + np.array([0, 1.0])
-
-        # 计算左右腿相对于“正下方”的角度
         left_angle  = _angle(la, hl, hl_down)
         right_angle = _angle(ra, hr, hr_down)
-
-        # 横叉程度 = 左腿角度 + 右腿角度
         split_angles.append(left_angle + right_angle)
 
     split_angle = float(max(split_angles)) if split_angles else 0.0
