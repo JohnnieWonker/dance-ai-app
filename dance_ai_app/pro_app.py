@@ -51,12 +51,12 @@ I18N: Dict[str, Dict] = {
         "pdf_dl": "📥 下载 PDF 报告",
         "metric_labels": {
             "xiliao": {
-                "min_prep_knee_angle": "起跳屈膝角",
+                "prep_knee_angle": "起跳屈膝角 (°)",
                 "flight_time": "腾空高度与持续 (s)",
-                "split_angle": "空中横叉角度 (°)",
+                "split_angle_max": "空中横叉角度 (°)",
                 "front_knee_angle": "空中前腿伸膝 (°)",
-                "back_knee_angle": "空中后腿伸膝 (°)",
-                "hip_flex": "吸撩腿屈髋角 (°)",
+                "back_knee_min": "空中后腿伸膝 (°)",
+                "pelvis_opening": "吸撩腿屈髋角 (°)",
                 "torso_upright": "空中躯干稳定性 (°)",
                 "landing_stability": "落地稳定性 (角度波动)",
             },
@@ -101,24 +101,24 @@ I18N: Dict[str, Dict] = {
         "pdf_dl": "📥 PDF 리포트 다운로드",
         "metric_labels": {
             "xiliao": {
-                "split_angle": "공중 다리 벌림 각도 (°)",
-                "flight_time": "체공 시간 (s)",
-                "hip_flex": "흡요퇴 굴곡 각도 (°)",
-                "torso_upright": "공중 상체 정렬 (°)",
-                "landing_stability": "착지 안정성 (각도 변동)",
-                "front_knee_angle": "空中前腿伸膝",
-                "back_knee_angle": "空中后腿伸膝",
-                "min_prep_knee_angle": "起跳屈膝(min_prep_knee_angle)",
-            },
-            "ballet": {
+                "prep_knee_angle": "도약 준비 무릎 굴곡 각도 (°)",
                 "flight_time": "체공 시간 (s)",
                 "split_angle_max": "공중 다리 벌림 각도 (°)",
-                "back_knee_min": "뒷다리 최소 무릎 각도 (°)",
-                "pelvis_opening": "골반 오픈 정도 (°)",
-                "prep_knee_angle": "도약 준비 단계 무릎 각도 (°)",
-                "front_knee_angle": "空中前腿伸膝",
-                "back_knee_angle": "空中后腿伸膝",
-                "min_prep_knee_angle": "起跳屈膝(min_prep_knee_angle)",
+                "front_knee_angle": "공중 앞다리 무릎 신전 (°)",
+                "back_knee_min": "공중 뒷다리 무릎 신전 (°)",
+                "pelvis_opening": "흡요퇴 고관절 굴곡 각도 (°)",
+                "torso_upright": "공중 상체 정렬 (°)",
+                "landing_stability": "착지 안정성 (각도 변동)",
+            },
+            "ballet": {
+                "prep_knee_angle": "도약 준비 플리에 각도 (°)",
+                "flight_time": "체공 시간 (s)",
+                "split_angle_max": "공중 스플릿 각도 (°)",
+                "front_knee_angle": "공중 앞다리 무릎 신전 (°)",
+                "back_knee_min": "공중 뒷다리 무릎 신전 (°)",
+                "pelvis_opening": "공중 골반 오픈 (°)",
+                "torso_upright": "공중 상체 세움 정도 (°)",
+                "arm_line": "공중 팔 라인 (°)",
             },
         },
         "action_name_xiliao_cn": "흡요퇴 점프",
@@ -151,24 +151,24 @@ I18N: Dict[str, Dict] = {
         "pdf_dl": "📥 Download PDF",
         "metric_labels": {
             "xiliao": {
-                "split_angle": "Air Split Angle (°)",
+                "prep_knee_angle": "Prep Knee Angle (°)",
                 "flight_time": "Flight Time (s)",
-                "hip_flex": "Hip Flexion (°)",
+                "split_angle_max": "Air Split Angle (°)",
+                "front_knee_angle": "Front Leg Extension in Air (°)",
+                "back_knee_min": "Back Leg Extension in Air (°)",
+                "pelvis_opening": "Hip Flexion / Pelvis Opening (°)",
                 "torso_upright": "Torso Uprightness (°)",
                 "landing_stability": "Landing Stability (angle SD)",
-                "front_knee_angle": "空中前腿伸膝",
-                "back_knee_angle": "空中后腿伸膝",
-                "min_prep_knee_angle": "起跳屈膝(min_prep_knee_angle)",
             },
             "ballet": {
+                "prep_knee_angle": "Prep Knee Angle (°)",
                 "flight_time": "Flight Time (s)",
                 "split_angle_max": "Max Split Angle (°)",
-                "back_knee_min": "Back Knee Min Angle (°)",
-                "pelvis_opening": "Pelvis Opening (°)",
-                "prep_knee_angle": "Prep Knee Angle (°)",
-                "front_knee_angle": "空中前腿伸膝",
-                "back_knee_angle": "空中后腿伸膝",
-                "min_prep_knee_angle": "起跳屈膝(min_prep_knee_angle)",
+                "front_knee_angle": "Front Knee Extension (°)",
+                "back_knee_min": "Back Knee Extension (°)",
+                "pelvis_opening": "Pelvis Opening in Air (°)",
+                "torso_upright": "Torso Uprightness (°)",
+                "arm_line": "Arm Line in Air (°)",
             },
         },
         "action_name_xiliao_cn": "Xi-Liao Leg Leap",
@@ -646,15 +646,22 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
 
     # === 4. 重新汇总指标到 metrics 字典（包含膝盖角度和动态特征） ===
     metrics = {
-        "split_angle": split_angle,
+        # 1 起跳屈膝角
+        "prep_knee_angle": min_front_knee_angle_during_flight,
+        # 2 腾空高度与持续
         "flight_time": flight_time,
-        "hip_flex": hip_flex,
+        # 3 空中横叉角度
+        "split_angle_max": split_angle,
+        # 4 前腿伸膝线条
+        "front_knee_angle": front_knee,
+        # 5 后腿伸膝线条
+        "back_knee_min": back_knee,
+        # 6 吸撩腿屈髋 / 骨盆打开
+        "pelvis_opening": hip_flex,
+        # 7 空中躯干稳定性
         "torso_upright": torso_upright,
+        # 8 落地稳定性
         "landing_stability": landing_stab,
-        "front_knee_angle": front_knee, 
-        "back_knee_angle": back_knee,
-        # 新增的动态特征，用于验证
-        "min_prep_knee_angle": min_front_knee_angle_during_flight, 
     }
 
     # === 5. 动作验证 (防止非目标动作得分) ===
@@ -682,107 +689,7 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
     # -------- 更专业的 8 维评分（0-100） --------
     scores = {}
 
-    # 1) 空中横叉 split_angle：140 ~ 200+
-    sa = split_angle
-    if sa < 140:
-        s_sa = 50.0
-    elif sa < 160:
-        # 140–160: 60–75
-        s_sa = 60.0 + (sa - 140) / (160 - 140) * 15.0
-    elif sa < 180:
-        # 160–180: 75–90
-        s_sa = 75.0 + (sa - 160) / (180 - 160) * 15.0
-    else:
-        s_sa = 100.0
-    scores["split_angle"] = float(np.clip(s_sa, 0, 100))
-
-    # 2) 腾空时间 flight_time：0.28 ~ 0.50+
-    ft = flight_time
-    if ft < 0.28:
-        s_ft = 55.0
-    elif ft < 0.38:
-        # 0.28–0.38: 70–85
-        s_ft = 70.0 + (ft - 0.28) / (0.38 - 0.28) * 15.0
-    elif ft <= 0.50:
-        # 0.38–0.50: 85–100
-        s_ft = 85.0 + (ft - 0.38) / (0.50 - 0.38) * 15.0
-    else:
-        s_ft = 100.0
-    scores["flight_time"] = float(np.clip(s_ft, 0, 100))
-
-    # 3) 屈髋角 hip_flex：90 ~ 150
-    hf = hip_flex
-    if hf < 90:
-        s_hf = 60.0
-    elif hf < 120:
-        # 90–120: 70–85
-        s_hf = 70.0 + (hf - 90) / (120 - 90) * 15.0
-    elif hf <= 150:
-        # 120–150: 85–100
-        s_hf = 85.0 + (hf - 120) / (150 - 120) * 15.0
-    else:
-        s_hf = 100.0
-    scores["hip_flex"] = float(np.clip(s_hf, 0, 100))
-
-    # 4) 躯干直立度 torso_upright：0 ~ 35 (越小越好)
-    tu = torso_upright
-    if tu >= 35:
-        s_tu = 60.0
-    elif tu >= 25:
-        # 25–35: 70–80
-        s_tu = 70.0 + (35 - tu) / (35 - 25) * 10.0
-    elif tu >= 10:
-        # 10–25: 80–95
-        s_tu = 80.0 + (25 - tu) / (25 - 10) * 15.0
-    else:
-        # <10: 95–100
-        s_tu = 95.0 + (10 - tu) / 10.0 * 5.0
-    scores["torso_upright"] = float(np.clip(s_tu, 0, 100))
-
-    # 5) 落地稳定性 landing_stability：std 3 ~ 10 (越小越好)
-    ls_val = landing_stab
-    if ls_val >= 10:
-        s_ls = 60.0
-    elif ls_val >= 6:
-        # 6–10: 70–85
-        s_ls = 70.0 + (10 - ls_val) / (10 - 6) * 15.0
-    elif ls_val >= 3:
-        # 3–6: 85–95
-        s_ls = 85.0 + (6 - ls_val) / (6 - 3) * 10.0
-    else:
-        # <3: 95–100
-        s_ls = 100.0
-    scores["landing_stability"] = float(np.clip(s_ls, 0, 100))
-
-    # 6) 前腿伸膝角 front_knee_angle：150 ~ 180 (越大越好)
-    fk = front_knee
-    if fk < 150:
-        s_fk = 60.0
-    elif fk < 165:
-        # 150–165: 70–85
-        s_fk = 70.0 + (fk - 150) / (165 - 150) * 15.0
-    elif fk <= 175:
-        # 165–175: 85–95
-        s_fk = 85.0 + (fk - 165) / (175 - 165) * 10.0
-    else:
-        s_fk = 100.0
-    scores["front_knee_angle"] = float(np.clip(s_fk, 0, 100))
-
-    # 7) 后腿伸膝角 back_knee_angle：145 ~ 180 (略宽松)
-    bk = back_knee
-    if bk < 145:
-        s_bk = 60.0
-    elif bk < 160:
-        # 145–160: 70–85
-        s_bk = 70.0 + (bk - 145) / (160 - 145) * 15.0
-    elif bk <= 175:
-        # 160–175: 85–95
-        s_bk = 85.0 + (bk - 160) / (175 - 160) * 10.0
-    else:
-        s_bk = 100.0
-    scores["back_knee_angle"] = float(np.clip(s_bk, 0, 100))
-
-    # 8) 起跳屈膝 min_prep_knee_angle：70 ~ 130，区间中间最佳
+    # 1) 起跳屈膝 prep_knee_angle：70 ~ 130，中间最好（沿用你原来的区间）
     prep = min_front_knee_angle_during_flight
     if prep > 130:
         s_prep = 60.0
@@ -798,9 +705,110 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
     else:
         # <70: 太深，略扣一点
         s_prep = 90.0
-    scores["min_prep_knee_angle"] = float(np.clip(s_prep, 0, 100))
+    scores["prep_knee_angle"] = float(np.clip(s_prep, 0, 100))
+
+    # 2) 腾空时间 flight_time：0.28 ~ 0.50+（保留你原来的区间）
+    ft = flight_time
+    if ft < 0.28:
+        s_ft = 55.0
+    elif ft < 0.38:
+        # 0.28–0.38: 70–85
+        s_ft = 70.0 + (ft - 0.28) / (0.38 - 0.28) * 15.0
+    elif ft <= 0.50:
+        # 0.38–0.50: 85–100
+        s_ft = 85.0 + (ft - 0.38) / (0.50 - 0.38) * 15.0
+    else:
+        s_ft = 100.0
+    scores["flight_time"] = float(np.clip(s_ft, 0, 100))
+
+    # 3) 空中横叉 split_angle_max：120 ~ 200+
+    sa = split_angle
+    if sa < 120:
+        s_sa = 50.0
+    elif sa < 160:
+        # 120–160: 70–90
+        s_sa = 70.0 + (sa - 120) / (160 - 120) * 20.0
+    elif sa < 180:
+        # 160–180: 90–98
+        s_sa = 90.0 + (sa - 160) / (180 - 160) * 8.0
+    else:
+        s_sa = 100.0
+    scores["split_angle_max"] = float(np.clip(s_sa, 0, 100))
+
+    # 4) 前腿伸膝 front_knee_angle：150 ~ 180 (越大越好)
+    fk = front_knee
+    if fk < 150:
+        s_fk = 60.0
+    elif fk < 165:
+        # 150–165: 70–85
+        s_fk = 70.0 + (fk - 150) / (165 - 150) * 15.0
+    elif fk <= 175:
+        # 165–175: 85–95
+        s_fk = 85.0 + (fk - 165) / (175 - 165) * 10.0
+    else:
+        s_fk = 100.0
+    scores["front_knee_angle"] = float(np.clip(s_fk, 0, 100))
+
+    # 5) 后腿伸膝 back_knee_min：145 ~ 180 (略宽松)
+    bk = back_knee
+    if bk < 145:
+        s_bk = 60.0
+    elif bk < 160:
+        # 145–160: 70–85
+        s_bk = 70.0 + (bk - 145) / (160 - 145) * 15.0
+    elif bk <= 175:
+        # 160–175: 85–95
+        s_bk = 85.0 + (bk - 160) / (175 - 160) * 10.0
+    else:
+        s_bk = 100.0
+    scores["back_knee_min"] = float(np.clip(s_bk, 0, 100))
+
+    # 6) 吸撩腿屈髋 / 骨盆打开 pelvis_opening：60 ~ 120+
+    hf = hip_flex
+    if hf < 60:
+        s_hf = 55.0
+    elif hf < 80:
+        # 60–80: 70–85
+        s_hf = 70.0 + (hf - 60) / (80 - 60) * 15.0
+    elif hf <= 120:
+        # 80–120: 85–100
+        s_hf = 85.0 + (hf - 80) / (120 - 80) * 15.0
+    else:
+        s_hf = 100.0
+    scores["pelvis_opening"] = float(np.clip(s_hf, 0, 100))
+
+    # 7) 躯干直立 torso_upright：0 ~ 35 (越小越好)
+    tu = torso_upright
+    if tu >= 35:
+        s_tu = 60.0
+    elif tu >= 25:
+        # 25–35: 70–80
+        s_tu = 70.0 + (35 - tu) / (35 - 25) * 10.0
+    elif tu >= 10:
+        # 10–25: 80–95
+        s_tu = 80.0 + (25 - tu) / (25 - 10) * 15.0
+    else:
+        # <10: 95–100
+        s_tu = 95.0 + (10 - tu) / 10.0 * 5.0
+    scores["torso_upright"] = float(np.clip(s_tu, 0, 100))
+
+    # 8) 落地稳定性 landing_stability：std 3 ~ 10 (越小越好)
+    ls_val = landing_stab
+    if ls_val >= 10:
+        s_ls = 60.0
+    elif ls_val >= 6:
+        # 6–10: 70–85
+        s_ls = 70.0 + (10 - ls_val) / (10 - 6) * 15.0
+    elif ls_val >= 3:
+        # 3–6: 85–95
+        s_ls = 85.0 + (6 - ls_val) / (6 - 3) * 10.0
+    else:
+        # <3: 95–100
+        s_ls = 100.0
+    scores["landing_stability"] = float(np.clip(s_ls, 0, 100))
 
     return metrics, scores
+
 
 # ======================= 7. 规则型 AI 建议 =======================
 
@@ -808,14 +816,15 @@ def generate_advice(mode_key: str, scores: Dict[str, float], lang: str) -> List[
     adv: List[str] = []
 
     if mode_key == "xiliao":
-        sa = scores.get("split_angle", 0)
+        # 统一 8 维 key
+        prep = scores.get("prep_knee_angle", 0)
         ft = scores.get("flight_time", 0)
-        hf = scores.get("hip_flex", 0)
+        sa = scores.get("split_angle_max", 0)
+        fk = scores.get("front_knee_angle", 0)
+        bk = scores.get("back_knee_min", 0)
+        hf = scores.get("pelvis_opening", 0)
         tu = scores.get("torso_upright", 0)
         ls_val = scores.get("landing_stability", 0)
-        fk = scores.get("front_knee_angle", 0)
-        bk = scores.get("back_knee_angle", 0)
-        prep = scores.get("min_prep_knee_angle", 0)
 
         # 1) 空中横叉
         if sa < 80:
