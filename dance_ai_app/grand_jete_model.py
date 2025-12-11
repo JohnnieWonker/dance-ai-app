@@ -232,6 +232,85 @@ def pelvis_opening_angle(lm) -> float:
     return float(angle)
 
 
+
+def auto_detect_lead_leg(landmark_seq: List, f_start: int, f_end: int, peak_idx: int) -> Optional[bool]:
+    """
+    自动判断哪条腿在前（lead leg）。
+    逻辑：
+    1) 用腾空段开始和结束时的髋部中心判断运动方向（向右 / 向左）。
+    2) 在峰值帧比较左右脚踝的 x 坐标：
+       - 若向右移动，则 x 更大的那条腿视为前腿；
+       - 若向左移动，则 x 更小的那条腿视为前腿。
+    3) 若方向不明显或脚踝缺失，则退化为比较膝盖的 x。
+    返回:
+        True  -> 左腿在前
+        False -> 右腿在前
+        None  -> 判断失败（回退到调用者给的 is_left_lead）
+    """
+    n = len(landmark_seq)
+    if n == 0:
+        return None
+
+    def hip_center_x(idx: int) -> Optional[float]:
+        if idx < 0 or idx >= n:
+            return None
+        lm = landmark_seq[idx]
+        lh = _get_xy(lm, LEFT_HIP)
+        rh = _get_xy(lm, RIGHT_HIP)
+        if lh is not None and rh is not None:
+            return float((lh[0] + rh[0]) / 2.0)
+        if lh is not None:
+            return float(lh[0])
+        if rh is not None:
+            return float(rh[0])
+        return None
+
+    # 1) 估计水平运动方向（髋部中心从腾空开始到结束的 x 变化）
+    x_start = hip_center_x(f_start)
+    x_end = hip_center_x(f_end)
+    move_dir = 0.0
+    if x_start is not None and x_end is not None:
+        move_dir = x_end - x_start  # >0: 向右, <0: 向左
+
+    # 2) 峰值帧的脚踝 / 膝盖位置
+    lm_peak = landmark_seq[peak_idx]
+    la = _get_xy(lm_peak, LEFT_ANKLE)
+    ra = _get_xy(lm_peak, RIGHT_ANKLE)
+    lk = _get_xy(lm_peak, LEFT_KNEE)
+    rk = _get_xy(lm_peak, RIGHT_KNEE)
+
+    def x_or_none(p):
+        return None if p is None else float(p[0])
+
+    la_x = x_or_none(la)
+    ra_x = x_or_none(ra)
+    lk_x = x_or_none(lk)
+    rk_x = x_or_none(rk)
+
+    # 3) 判定逻辑
+    def decide_front(using_ankle: bool = True) -> Optional[bool]:
+        lx = la_x if using_ankle else lk_x
+        rx = ra_x if using_ankle else rk_x
+        if lx is None or rx is None:
+            return None
+        if abs(move_dir) >= 0.005:
+            # 有明显运动方向
+            if move_dir > 0:   # 向右
+                return lx > rx
+            else:              # 向左
+                return lx < rx
+        else:
+            # 方向不明显：就把 x 更大的那条腿视作“前腿”
+            return lx > rx
+
+    front_is_left = decide_front(using_ankle=True)
+    if front_is_left is None:
+        front_is_left = decide_front(using_ankle=False)
+
+    return front_is_left
+
+
+
 # ----------------- 1. 检测起跳 / 落地，计算体空时间 -----------------
 
 def detect_flight_frames(landmark_seq: List, fps: float) -> Tuple[int, int]:
@@ -299,12 +378,12 @@ def compute_metrics_for_grand_jete(
     统一 8 个指标的“原始测量值”，供芭蕾使用：
     1) flight_time        腾空时间
     2) split_angle_max    空中横叉角
-    3) pelvis_opening     空中骨盆打开 / 屈髋角（前腿肩-髋-膝夹角）
-    4) back_knee_min      空中后腿伸膝
+    3) pelvis_opening     骨盆-肩带夹角 (°，越小越对齐)
+    4) back_knee_min      空中后腿伸膝 (峰值帧膝角)
     5) prep_knee_angle    起跳屈膝（起跳前几帧前腿膝角平均）
     6) front_knee_angle   空中前腿伸膝（峰值帧）
     7) torso_upright      空中躯干直立度（峰值帧，越小越直）
-    8) arm_line           空中手臂三位手线条（左右肘角平均）
+    8) arm_line           空中手臂三位手线条综合得分（0–100）
     """
     n = len(landmark_seq)
     if n == 0:
@@ -317,17 +396,7 @@ def compute_metrics_for_grand_jete(
     f_start, f_end = detect_flight_frames(landmark_seq, fps)
     flight_time = max(0.0, (f_end - f_start + 1) / fps)
 
-    # 2) 前腿 / 后腿
-    if is_left_lead:
-        front_hip, front_knee, front_ankle = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
-        back_hip, back_knee, back_ankle = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
-        front_shoulder = LEFT_SHOULDER
-    else:
-        front_hip, front_knee, front_ankle = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
-        back_hip, back_knee, back_ankle = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
-        front_shoulder = RIGHT_SHOULDER
-
-    # 3) 峰值帧（nose y 最小）
+    # 2) 峰值帧（nose y 最小）
     peak_idx = f_start
     min_nose_y = 1.0
     for i in range(f_start, f_end + 1):
@@ -338,7 +407,21 @@ def compute_metrics_for_grand_jete(
             min_nose_y = nose[1]
             peak_idx = i
 
-    # 4) 空中横叉角：两侧髋向下的竖线 与 腿的夹角之和
+    # 3) 自动识别前后腿（如果失败，再用 is_left_lead 作为兜底）
+    auto_lead = auto_detect_lead_leg(landmark_seq, f_start, f_end, peak_idx)
+    if auto_lead is not None:
+        is_left_lead = auto_lead
+
+    if is_left_lead:
+        front_hip, front_knee, front_ankle = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
+        back_hip,  back_knee,  back_ankle  = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
+        front_shoulder = LEFT_SHOULDER
+    else:
+        front_hip, front_knee, front_ankle = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
+        back_hip,  back_knee,  back_ankle  = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
+        front_shoulder = RIGHT_SHOULDER
+
+    # 4) 空中横叉角：两侧髋向下的竖线 与 两腿的夹角之和（整个腾空段）
     split_angles = []
     for i in range(f_start, f_end + 1):
         hip_l = _get_xy(landmark_seq[i], LEFT_HIP)
@@ -364,16 +447,15 @@ def compute_metrics_for_grand_jete(
 
     split_angle_max = float(max(split_angles)) if split_angles else 0.0
 
-    # 5) 后腿伸膝：腾空段内后腿膝角最小值（越接近 180 越好）
-    back_knee_angles = []
-    for i in range(f_start, f_end + 1):
-        h = _get_xy(landmark_seq[i], back_hip)
-        k = _get_xy(landmark_seq[i], back_knee)
-        a = _get_xy(landmark_seq[i], back_ankle)
-        if not _is_valid_triplet((h, k, a)):
-            continue
-        back_knee_angles.append(_angle(h, k, a))
-    back_knee_min = float(min(back_knee_angles)) if back_knee_angles else 0.0
+    # 5) 后腿伸膝：**只看峰值帧的后腿膝角**
+    lm_peak = landmark_seq[peak_idx]
+    bh = _get_xy(lm_peak, back_hip)
+    bk = _get_xy(lm_peak, back_knee)
+    ba = _get_xy(lm_peak, back_ankle)
+    if all(p is not None for p in [bh, bk, ba]):
+        back_knee_min = _angle(bh, bk, ba)
+    else:
+        back_knee_min = 0.0
 
     # 6) 起跳屈膝：腾空开始前几帧前腿膝角平均
     prep_frames = range(max(0, f_start - 4), f_start)
@@ -387,36 +469,19 @@ def compute_metrics_for_grand_jete(
         prep_angles.append(_angle(h, k, a))
     prep_knee_angle = float(np.mean(prep_angles)) if prep_angles else 0.0
 
-    # 7) 峰值帧的前腿屈髋（pelvis_opening）与前后腿伸膝
-    lm_peak = landmark_seq[peak_idx]
+    # 7) 峰值帧：骨盆-肩带夹角 / 前腿膝角 / 躯干直立度
     fh = _get_xy(lm_peak, front_hip)
     fk = _get_xy(lm_peak, front_knee)
     fa = _get_xy(lm_peak, front_ankle)
-    fs = _get_xy(lm_peak, front_shoulder)
-    bh = _get_xy(lm_peak, back_hip)
-    bk = _get_xy(lm_peak, back_knee)
-    ba = _get_xy(lm_peak, back_ankle)
+
     pelvis_opening = pelvis_opening_angle(lm_peak)
     front_knee_angle = _angle(fh, fk, fa) if all(p is not None for p in [fh, fk, fa]) else 0.0
-    back_knee_peak = _angle(bh, bk, ba) if all(p is not None for p in [bh, bk, ba]) else back_knee_min
-    
-    if back_knee_min == 0.0:
-        back_knee_min = back_knee_peak
 
-
-    # front / back 膝角：峰值帧
-    front_knee_angle = _angle(fh, fk, fa) if all(p is not None for p in [fh, fk, fa]) else 0.0
-    # 用 peak 帧的后腿膝角补充一份（与 back_knee_min 相互印证）
-    back_knee_peak = _angle(bh, bk, ba) if all(p is not None for p in [bh, bk, ba]) else back_knee_min
-    if back_knee_min == 0.0:
-        back_knee_min = back_knee_peak
-
-    # 8) 空中躯干直立度：峰值帧与垂直线夹角
     t_ang = _trunk_angle(lm_peak)
     torso_upright = float(t_ang) if t_ang is not None else 0.0
 
-    # 9) 空中手臂线条：左右肘角平均
-    arm_line_score, _arm_details = compute_arm_line(lm_peak)
+    # 8) 空中手臂线条：峰值帧三位手综合得分 (0–100)
+    arm_line_score, _ = compute_arm_line(lm_peak)
 
     return GrandJeteMetrics(
         flight_time=flight_time,
