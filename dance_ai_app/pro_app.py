@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 
-from grand_jete_model import analyze_grand_jete, detect_flight_frames
+from grand_jete_model import analyze_grand_jete, detect_flight_frames, auto_detect_lead_leg
 from pdf_report import generate_pdf
 
 
@@ -496,6 +496,12 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
         if y < min_nose:
             min_nose = y
             peak_idx = i
+
+    # 自动识别前腿（不需要手动选择）
+    auto_lead = auto_detect_lead_leg(landmark_seq, f_start, f_end, peak_idx)
+    if auto_lead is not None:
+        is_left_lead = auto_lead
+
 
     # 选左腿为前腿
     def get_xy(lm, idx):
