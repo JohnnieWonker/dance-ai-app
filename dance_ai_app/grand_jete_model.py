@@ -212,6 +212,24 @@ def compute_arm_line(landmarks) -> Tuple[float, Dict[str, float]]:
 
     return float(arm_line_score), details
 
+def pelvis_opening_angle(lm) -> float:
+    LH = _get_xy(lm, LEFT_HIP)
+    RH = _get_xy(lm, RIGHT_HIP)
+    LS = _get_xy(lm, LEFT_SHOULDER)
+    RS = _get_xy(lm, RIGHT_SHOULDER)
+
+    if any(p is None for p in [LH, RH, LS, RS]):
+        return 0.0
+
+    pelvis_vec = RH - LH
+    shoulder_vec = RS - LS  
+    denom = (np.linalg.norm(pelvis_vec) *
+             np.linalg.norm(shoulder_vec) + 1e-8)
+    cos_val = np.dot(pelvis_vec, shoulder_vec) / denom
+    cos_val = np.clip(cos_val, -1.0, 1.0)
+    angle = np.degrees(np.arccos(cos_val))
+    
+    return float(angle)
 
 
 # ----------------- 1. 检测起跳 / 落地，计算体空时间 -----------------
@@ -371,21 +389,20 @@ def compute_metrics_for_grand_jete(
 
     # 7) 峰值帧的前腿屈髋（pelvis_opening）与前后腿伸膝
     lm_peak = landmark_seq[peak_idx]
-
     fh = _get_xy(lm_peak, front_hip)
     fk = _get_xy(lm_peak, front_knee)
     fa = _get_xy(lm_peak, front_ankle)
     fs = _get_xy(lm_peak, front_shoulder)
-
     bh = _get_xy(lm_peak, back_hip)
     bk = _get_xy(lm_peak, back_knee)
     ba = _get_xy(lm_peak, back_ankle)
+    pelvis_opening = pelvis_opening_angle(lm_peak)
+    front_knee_angle = _angle(fh, fk, fa) if all(p is not None for p in [fh, fk, fa]) else 0.0
+    back_knee_peak = _angle(bh, bk, ba) if all(p is not None for p in [bh, bk, ba]) else back_knee_min
+    
+    if back_knee_min == 0.0:
+        back_knee_min = back_knee_peak
 
-    # pelvis_opening：前腿肩-髋-膝夹角（其实就是“屈髋角”）
-    if all(p is not None for p in [fh, fk, fs]):
-        pelvis_opening = _angle(fs, fh, fk)
-    else:
-        pelvis_opening = 0.0
 
     # front / back 膝角：峰值帧
     front_knee_angle = _angle(fh, fk, fa) if all(p is not None for p in [fh, fk, fa]) else 0.0
@@ -442,17 +459,25 @@ def score_grand_jete(metrics: GrandJeteMetrics) -> Dict[str, float]:
         s_sa = 100.0
     scores["split_angle_max"] = float(np.clip(s_sa, 0, 100))
 
-    # 3) pelvis_opening（前腿屈髋 / 骨盆打开）：90~150 (越大越好)
+    # 3) pelvis_opening：骨盆-肩带夹角 (°)，越小越好
     po = m.pelvis_opening
-    if po < 90:
+    # 一般正常训练下，0~40° 已经覆盖大多数情况：
+    # 0–10°：几乎完全平行，接近满分
+    # 10–25°：轻微错位，略扣
+    # 25–40°：明显错位，分数中等
+    if po >= 40:
         s_po = 60.0
-    elif po < 120:
-        s_po = 70.0 + (po - 90) / 30.0 * 15.0    # 90–120: 70–85
-    elif po <= 150:
-        s_po = 85.0 + (po - 120) / 30.0 * 15.0   # 120–150: 85–100
+    elif po >= 25:
+        # 25–40: 70–80
+        s_po = 70.0 + (40.0 - po) / (40.0 - 25.0) * 10.0
+    elif po >= 10:
+        # 10–25: 80–95
+        s_po = 80.0 + (25.0 - po) / (25.0 - 10.0) * 15.0
     else:
-        s_po = 100.0
+        # 0–10: 95–100
+        s_po = 95.0 + (10.0 - po) / 10.0 * 5.0
     scores["pelvis_opening"] = float(np.clip(s_po, 0, 100))
+
 
     # 4) back_knee_min：145~180 (越大越好)
     bk = m.back_knee_min
