@@ -86,6 +86,134 @@ def _trunk_angle(landmarks) -> Optional[float]:
     return ang
 
 
+def compute_arm_line(landmarks) -> Tuple[float, Dict[str, float]]:
+    if landmarks is None:
+        return 50.0, {}
+
+    ls = _get_xy(landmarks, LEFT_SHOULDER)
+    rs = _get_xy(landmarks, RIGHT_SHOULDER)
+    le = _get_xy(landmarks, LEFT_ELBOW)
+    re = _get_xy(landmarks, RIGHT_ELBOW)
+    lw = _get_xy(landmarks, LEFT_WRIST)
+    rw = _get_xy(landmarks, RIGHT_WRIST)
+    lh = _get_xy(landmarks, LEFT_HIP)
+    rh = _get_xy(landmarks, RIGHT_HIP)
+    torso_center = None
+    
+    if lh is not None and rh is not None:
+        torso_center = (lh + rh) / 2.0
+    elif ls is not None and rs is not None:
+        torso_center = (ls + rs) / 2.0
+
+    def safe_angle(a: Optional[np.ndarray],
+                   b: Optional[np.ndarray],
+                   c: Optional[np.ndarray]) -> Optional[float]:
+        if a is None or b is None or c is None:
+            return None
+        return _angle(a, b, c)
+
+    theta1_left  = safe_angle(torso_center, ls, le)
+    theta1_right = safe_angle(torso_center, rs, re)
+    theta2_left  = safe_angle(ls, le, lw)
+    theta2_right = safe_angle(rs, re, rw)
+    H_left = None
+    
+    if le is not None and lw is not None:
+        H_left = float(le[1] - lw[1])
+
+    H_right = None
+    if re is not None and rw is not None:
+        H_right = float(re[1] - rw[1])
+
+    S_parts = []
+    
+    if (theta1_left is not None) and (theta1_right is not None):
+        S_parts.append(abs(theta1_left - theta1_right))
+    if (theta2_left is not None) and (theta2_right is not None):
+        S_parts.append(abs(theta2_left - theta2_right))
+    if S_parts:
+        symmetry_S = float(sum(S_parts) / len(S_parts)) 
+    else:
+        symmetry_S = 0.0
+
+    def score_theta1(theta: Optional[float]) -> float:
+        if theta is None:
+            return 60.0
+        mid = 55.0
+        tol = 30.0 
+        d = abs(theta - mid)
+        if d >= tol:
+            return 60.0
+        return 100.0 - (d / tol) * 40.0  # 100 → 60
+
+    def score_theta2(theta: Optional[float]) -> float:
+        if theta is None:
+            return 60.0
+        mid = 165.0
+        tol = 25.0 
+        d = abs(theta - mid)
+        if d >= tol:
+            return 60.0
+        return 100.0 - (d / tol) * 40.0
+
+    def score_H(H: Optional[float]) -> float:
+        if H is None:
+            return 60.0
+
+        H_clamp = float(np.clip(H, -0.1, 0.1))
+
+        if H_clamp < -0.02: 
+            return 60.0
+        if H_clamp < 0.0:     # 略低于肘: 70~85
+            return 70.0 + (H_clamp + 0.02) / 0.02 * 15.0
+        if H_clamp <= 0.05:   # 理想区间: 85~100
+            return 85.0 + (H_clamp / 0.05) * 15.0
+            
+        return 100.0 - (H_clamp - 0.05) / 0.05 * 10.0
+
+    def score_symmetry(S: float) -> float:
+        S_clamp = float(max(0.0, min(S, 40.0)))
+        if S_clamp <= 10.0:
+            return 100.0
+        if S_clamp <= 20.0:
+            # 10–20: 100 → 85
+            return 100.0 - (S_clamp - 10.0) / 10.0 * 15.0
+        # 20–40: 85 → 60
+        return 85.0 - (S_clamp - 20.0) / 20.0 * 25.0
+
+    def mean_valid(values: List[Optional[float]]) -> Optional[float]:
+        valid = [v for v in values if v is not None]
+        if not valid:
+            return None
+        return float(sum(valid) / len(valid))
+
+    theta1_mean = mean_valid([theta1_left, theta1_right])
+    theta2_mean = mean_valid([theta2_left, theta2_right])
+    H_mean      = mean_valid([H_left, H_right])
+    s1 = score_theta1(theta1_mean)
+    s2 = score_theta2(theta2_mean)
+    s3 = score_H(H_mean)
+    s4 = score_symmetry(symmetry_S)
+    arm_line_score = 0.25 * (s1 + s2 + s3 + s4)
+
+    details = {
+        "theta1_left":  float(theta1_left)  if theta1_left  is not None else 0.0,
+        "theta1_right": float(theta1_right) if theta1_right is not None else 0.0,
+        "theta2_left":  float(theta2_left)  if theta2_left  is not None else 0.0,
+        "theta2_right": float(theta2_right) if theta2_right is not None else 0.0,
+        "H_left":       float(H_left)       if H_left       is not None else 0.0,
+        "H_right":      float(H_right)      if H_right      is not None else 0.0,
+        "symmetry_S":   float(symmetry_S),
+        "score_theta1": float(s1),
+        "score_theta2": float(s2),
+        "score_H":      float(s3),
+        "score_symmetry": float(s4),
+    }
+
+    return float(arm_line_score), details
+
+
+
 # ----------------- 1. 检测起跳 / 落地，计算体空时间 -----------------
 
 def detect_flight_frames(landmark_seq: List, fps: float) -> Tuple[int, int]:
@@ -271,20 +399,7 @@ def compute_metrics_for_grand_jete(
     torso_upright = float(t_ang) if t_ang is not None else 0.0
 
     # 9) 空中手臂线条：左右肘角平均
-    ls = _get_xy(lm_peak, LEFT_SHOULDER)
-    le = _get_xy(lm_peak, LEFT_ELBOW)
-    lw = _get_xy(lm_peak, LEFT_WRIST)
-    rs = _get_xy(lm_peak, RIGHT_SHOULDER)
-    re = _get_xy(lm_peak, RIGHT_ELBOW)
-    rw = _get_xy(lm_peak, RIGHT_WRIST)
-
-    elbow_angles = []
-    if all(p is not None for p in [ls, le, lw]):
-        elbow_angles.append(_angle(ls, le, lw))
-    if all(p is not None for p in [rs, re, rw]):
-        elbow_angles.append(_angle(rs, re, rw))
-
-    arm_line = float(np.mean(elbow_angles)) if elbow_angles else 0.0
+    arm_line_score, _arm_details = compute_arm_line(lm_peak)
 
     return GrandJeteMetrics(
         flight_time=flight_time,
@@ -294,7 +409,7 @@ def compute_metrics_for_grand_jete(
         prep_knee_angle=prep_knee_angle,
         front_knee_angle=front_knee_angle,
         torso_upright=torso_upright,
-        arm_line=arm_line,
+        arm_line=arm_line_score,
     )
 
 # ----------------- 3. 将指标转换为 0–100 分 -----------------
@@ -388,17 +503,8 @@ def score_grand_jete(metrics: GrandJeteMetrics) -> Dict[str, float]:
 
     # 8) arm_line：肘角 150~180 (越接近 180 越好)
     al = m.arm_line
-    if al == 0.0:
-        s_al = 50.0
-    elif al < 150:
-        s_al = 60.0
-    elif al < 165:
-        s_al = 70.0 + (al - 150) / 15.0 * 15.0   # 150–165: 70–85
-    elif al <= 175:
-        s_al = 85.0 + (al - 165) / 10.0 * 10.0   # 165–175: 85–95
-    else:
-        s_al = 100.0
-    scores["arm_line"] = float(np.clip(s_al, 0, 100))
+    s_al = float(np.clip(al, 0, 100))
+    scores["arm_line"] = s_al
 
     return scores
 
