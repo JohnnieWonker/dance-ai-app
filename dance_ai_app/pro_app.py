@@ -674,9 +674,6 @@ def analyze_xiliao(landmark_seq: List, fps: float, is_left_lead: bool = True) ->
     elif sa < 180:
         # 160–180: 75–90
         s_sa = 75.0 + (sa - 160) / (180 - 160) * 15.0
-    elif sa <= 200:
-        # 180–200: 90–100
-        s_sa = 90.0 + (sa - 180) / (200 - 180) * 10.0
     else:
         s_sa = 100.0
     scores["split_angle"] = float(np.clip(s_sa, 0, 100))
