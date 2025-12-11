@@ -26,7 +26,8 @@ jobs:
 
       - name: Build exe
         run: >
-          pyinstaller run.py --onefile --add-data "dance_ai_app;dance_ai_app"
+          pyinstaller run.py --onefile --icon app_icon.ico
+          --add-data "dance_ai_app;dance_ai_app"
           --hidden-import mediapipe --hidden-import cv2 --hidden-import pandas
           --hidden-import numpy --hidden-import plotly --hidden-import reportlab
           --collect-all streamlit --collect-all reportlab --collect-all mediapipe
