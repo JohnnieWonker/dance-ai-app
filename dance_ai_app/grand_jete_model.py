@@ -9,8 +9,12 @@ import numpy as np
 
 # -------- MediaPipe Pose 关键点索引（v0.10.x）---------
 NOSE = 0
-LEFT_SHOULDER = 11   # NEW
-RIGHT_SHOULDER = 12  # NEW
+LEFT_SHOULDER = 11
+RIGHT_SHOULDER = 12
+LEFT_ELBOW = 13
+RIGHT_ELBOW = 14
+LEFT_WRIST = 15
+RIGHT_WRIST = 16
 LEFT_HIP = 23
 RIGHT_HIP = 24
 LEFT_KNEE = 25
@@ -23,13 +27,14 @@ RIGHT_ANKLE = 28
 class GrandJeteMetrics:
     flight_time: float          # 体空时间 (s)
     split_angle_max: float      # 空中最大横叉角 (°)
-    back_knee_min: float        # 后腿最小膝角 (°)
-    pelvis_opening: float       # 骨盆打开程度 (°，Event4 - Event3)
-    prep_knee_angle: float      # 助跳阶段前腿膝角 (°)
+    pelvis_opening: float       # 空中骨盆打开 / 屈髋角 (°，前腿髋部)
+    back_knee_min: float        # 空中后腿伸膝角 (°，越接近 180 越好)
+    prep_knee_angle: float      # 起跳屈膝角 (°，起跳前几帧前腿膝角平均)
 
-    trunk_lean_std: float       # NEW 腾空阶段躯干倾斜角标准差 (°)
-    landing_knee_flexion: float # NEW 落地瞬间膝角（两膝平均，°）
-    landing_trunk_lean: float   # NEW 落地瞬间躯干倾斜角 (°)
+    front_knee_angle: float     # 空中前腿伸膝角 (°，峰值帧)
+    torso_upright: float        # 空中躯干直立度：与垂直线的夹角 (°，越小越直)
+    arm_line: float             # 空中手臂线条：左右肘角平均 (°，越接近 180 越直)
+
 
 
 # ----------------- 小工具函数 -----------------
@@ -145,28 +150,38 @@ def compute_metrics_for_grand_jete(
     is_left_lead: bool = True,
 ) -> GrandJeteMetrics:
     """
-    landmark_seq: 每帧的 pose_landmarks.landmark 列表
-    fps: 视频帧率
-    is_left_lead: 是否左腿在前（默认 True，右脚助跑 → 左腿前叉）
+    统一 8 个指标的“原始测量值”，供芭蕾使用：
+    1) flight_time        腾空时间
+    2) split_angle_max    空中横叉角
+    3) pelvis_opening     空中骨盆打开 / 屈髋角（前腿肩-髋-膝夹角）
+    4) back_knee_min      空中后腿伸膝
+    5) prep_knee_angle    起跳屈膝（起跳前几帧前腿膝角平均）
+    6) front_knee_angle   空中前腿伸膝（峰值帧）
+    7) torso_upright      空中躯干直立度（峰值帧，越小越直）
+    8) arm_line           空中手臂三位手线条（左右肘角平均）
     """
     n = len(landmark_seq)
     if n == 0:
-        return GrandJeteMetrics(0.0, 0.0, 0.0, 0.0, 0.0,
-                                0.0, 0.0, 0.0)
+        return GrandJeteMetrics(
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0
+        )
 
-    # 1) 体空时间
+    # 1) 腾空段 + 腾空时间
     f_start, f_end = detect_flight_frames(landmark_seq, fps)
     flight_time = max(0.0, (f_end - f_start + 1) / fps)
 
-    # 2) 确定前腿 / 后腿 index
+    # 2) 前腿 / 后腿
     if is_left_lead:
         front_hip, front_knee, front_ankle = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
         back_hip, back_knee, back_ankle = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
+        front_shoulder = LEFT_SHOULDER
     else:
         front_hip, front_knee, front_ankle = RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE
         back_hip, back_knee, back_ankle = LEFT_HIP, LEFT_KNEE, LEFT_ANKLE
+        front_shoulder = RIGHT_SHOULDER
 
-    # 3) 在腾空段中找到“最高点”(nose y 最小) ≈ Event3
+    # 3) 峰值帧（nose y 最小）
     peak_idx = f_start
     min_nose_y = 1.0
     for i in range(f_start, f_end + 1):
@@ -177,20 +192,14 @@ def compute_metrics_for_grand_jete(
             min_nose_y = nose[1]
             peak_idx = i
 
-    event3_idx = peak_idx
-    event4_idx = min(f_end, peak_idx + max(1, int(0.2 * (f_end - f_start + 1))))
-
-    # 4) 空中最大横叉角
-    # 这边我把左右髋向下延申了一点当条线，左踝跟左边线的夹角加上右边夹角这样就能超过180度了。
+    # 4) 空中横叉角：两侧髋向下的竖线 与 腿的夹角之和
     split_angles = []
     for i in range(f_start, f_end + 1):
         hip_l = _get_xy(landmark_seq[i], LEFT_HIP)
         hip_r = _get_xy(landmark_seq[i], RIGHT_HIP)
         f_ank = _get_xy(landmark_seq[i], front_ankle)
         b_ank = _get_xy(landmark_seq[i], back_ankle)
-        
         if any(p is None for p in [hip_l, hip_r, f_ank, b_ank]):
-            print("Skipping as the critical point is missed (hips or ankle).")
             continue
 
         hip_l_down = hip_l + np.array([0.0, 1.0])
@@ -209,8 +218,7 @@ def compute_metrics_for_grand_jete(
 
     split_angle_max = float(max(split_angles)) if split_angles else 0.0
 
-
-    # 5) 后腿最小膝角
+    # 5) 后腿伸膝：腾空段内后腿膝角最小值（越接近 180 越好）
     back_knee_angles = []
     for i in range(f_start, f_end + 1):
         h = _get_xy(landmark_seq[i], back_hip)
@@ -221,22 +229,7 @@ def compute_metrics_for_grand_jete(
         back_knee_angles.append(_angle(h, k, a))
     back_knee_min = float(min(back_knee_angles)) if back_knee_angles else 0.0
 
-    # 6) 骨盆打开程度：Event3 vs Event4
-    def pelvis_angle(idx: int) -> Optional[float]:
-        hl = _get_xy(landmark_seq[idx], LEFT_HIP)
-        hr = _get_xy(landmark_seq[idx], RIGHT_HIP)
-        if hl is None or hr is None:
-            return None
-        v = hr - hl
-        return float(np.degrees(np.arctan2(v[1], v[0])))
-
-    ang3 = pelvis_angle(event3_idx)
-    ang4 = pelvis_angle(event4_idx)
-    pelvis_opening = 0.0
-    if ang3 is not None and ang4 is not None:
-        pelvis_opening = float(ang4 - ang3)
-
-    # 7) 助跳阶段前腿膝角
+    # 6) 起跳屈膝：腾空开始前几帧前腿膝角平均
     prep_frames = range(max(0, f_start - 4), f_start)
     prep_angles = []
     for i in prep_frames:
@@ -248,59 +241,71 @@ def compute_metrics_for_grand_jete(
         prep_angles.append(_angle(h, k, a))
     prep_knee_angle = float(np.mean(prep_angles)) if prep_angles else 0.0
 
-    # 8) NEW: 躯干倾斜稳定性（腾空段）
-    trunk_angles = []
-    for i in range(f_start, f_end + 1):
-        ang = _trunk_angle(landmark_seq[i])
-        if ang is not None:
-            trunk_angles.append(ang)
-    trunk_lean_std = float(np.std(trunk_angles)) if trunk_angles else 0.0
+    # 7) 峰值帧的前腿屈髋（pelvis_opening）与前后腿伸膝
+    lm_peak = landmark_seq[peak_idx]
 
-    # 9) NEW: 落地瞬间膝角（两膝平均）
-    def knee_angle_for_side(landmarks, hip_idx, knee_idx, ankle_idx) -> Optional[float]:
-        h = _get_xy(landmarks, hip_idx)
-        k = _get_xy(landmarks, knee_idx)
-        a = _get_xy(landmarks, ankle_idx)
-        if not _is_valid_triplet((h, k, a)):
-            return None
-        return _angle(h, k, a)
+    fh = _get_xy(lm_peak, front_hip)
+    fk = _get_xy(lm_peak, front_knee)
+    fa = _get_xy(lm_peak, front_ankle)
+    fs = _get_xy(lm_peak, front_shoulder)
 
-    lk = knee_angle_for_side(landmark_seq[f_end], LEFT_HIP, LEFT_KNEE, LEFT_ANKLE)
-    rk = knee_angle_for_side(landmark_seq[f_end], RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE)
-    if lk is not None and rk is not None:
-        landing_knee_flexion = float((lk + rk) / 2.0)
-    elif lk is not None:
-        landing_knee_flexion = float(lk)
-    elif rk is not None:
-        landing_knee_flexion = float(rk)
+    bh = _get_xy(lm_peak, back_hip)
+    bk = _get_xy(lm_peak, back_knee)
+    ba = _get_xy(lm_peak, back_ankle)
+
+    # pelvis_opening：前腿肩-髋-膝夹角（其实就是“屈髋角”）
+    if all(p is not None for p in [fh, fk, fs]):
+        pelvis_opening = _angle(fs, fh, fk)
     else:
-        landing_knee_flexion = 0.0
+        pelvis_opening = 0.0
 
-    # 10) NEW: 落地瞬间躯干倾斜角
-    lt_ang = _trunk_angle(landmark_seq[f_end])
-    landing_trunk_lean = float(lt_ang) if lt_ang is not None else 0.0
+    # front / back 膝角：峰值帧
+    front_knee_angle = _angle(fh, fk, fa) if all(p is not None for p in [fh, fk, fa]) else 0.0
+    # 用 peak 帧的后腿膝角补充一份（与 back_knee_min 相互印证）
+    back_knee_peak = _angle(bh, bk, ba) if all(p is not None for p in [bh, bk, ba]) else back_knee_min
+    if back_knee_min == 0.0:
+        back_knee_min = back_knee_peak
+
+    # 8) 空中躯干直立度：峰值帧与垂直线夹角
+    t_ang = _trunk_angle(lm_peak)
+    torso_upright = float(t_ang) if t_ang is not None else 0.0
+
+    # 9) 空中手臂线条：左右肘角平均
+    ls = _get_xy(lm_peak, LEFT_SHOULDER)
+    le = _get_xy(lm_peak, LEFT_ELBOW)
+    lw = _get_xy(lm_peak, LEFT_WRIST)
+    rs = _get_xy(lm_peak, RIGHT_SHOULDER)
+    re = _get_xy(lm_peak, RIGHT_ELBOW)
+    rw = _get_xy(lm_peak, RIGHT_WRIST)
+
+    elbow_angles = []
+    if all(p is not None for p in [ls, le, lw]):
+        elbow_angles.append(_angle(ls, le, lw))
+    if all(p is not None for p in [rs, re, rw]):
+        elbow_angles.append(_angle(rs, re, rw))
+
+    arm_line = float(np.mean(elbow_angles)) if elbow_angles else 0.0
 
     return GrandJeteMetrics(
         flight_time=flight_time,
         split_angle_max=split_angle_max,
-        back_knee_min=back_knee_min,
         pelvis_opening=pelvis_opening,
+        back_knee_min=back_knee_min,
         prep_knee_angle=prep_knee_angle,
-        trunk_lean_std=trunk_lean_std,
-        landing_knee_flexion=landing_knee_flexion,
-        landing_trunk_lean=landing_trunk_lean,
+        front_knee_angle=front_knee_angle,
+        torso_upright=torso_upright,
+        arm_line=arm_line,
     )
-
 
 # ----------------- 3. 将指标转换为 0–100 分 -----------------
 
 def score_grand_jete(metrics: GrandJeteMetrics) -> Dict[str, float]:
-    """按照论文趋势与专业经验，将 8 个指标映射为 0–100 分"""
+    """Grand Jeté 8 指标 → 0–100 分"""
 
     m = metrics
     scores: Dict[str, float] = {}
 
-    # 1) 体空时间：0.45~0.70s 映射到 60~100
+    # 1) flight_time：0.45~0.70s → 60~100
     ft = m.flight_time
     if ft <= 0.45:
         s_ft = 50.0
@@ -310,37 +315,43 @@ def score_grand_jete(metrics: GrandJeteMetrics) -> Dict[str, float]:
         s_ft = 60.0 + (ft - 0.45) / (0.70 - 0.45) * 40.0
     scores["flight_time"] = float(np.clip(s_ft, 0, 100))
 
-    # 2) 空中横叉角
+    # 2) split_angle_max：140~180+ (越大越好)
     sa = m.split_angle_max
-    if sa <= 140:
+    if sa < 140:
         s_sa = 50.0
-    elif sa >= 180:
-        s_sa = 100.0
+    elif sa < 160:
+        s_sa = 60.0 + (sa - 140) / 20.0 * 15.0   # 140–160: 60–75
+    elif sa < 180:
+        s_sa = 75.0 + (sa - 160) / 20.0 * 15.0   # 160–180: 75–90
     else:
-        s_sa = 65.0 + (sa - 140) / (180 - 140) * 30.0
+        s_sa = 100.0
     scores["split_angle_max"] = float(np.clip(s_sa, 0, 100))
 
-    # 3) 后腿膝角（越小越好）
-    bk = m.back_knee_min
-    if bk >= 120:
-        s_bk = 50.0
-    elif bk <= 60:
-        s_bk = 100.0
-    else:
-        s_bk = 70.0 + (120 - bk) / (120 - 60) * 25.0
-    scores["back_knee_min"] = float(np.clip(s_bk, 0, 100))
-
-    # 4) 骨盆打开程度
+    # 3) pelvis_opening（前腿屈髋 / 骨盆打开）：90~150 (越大越好)
     po = m.pelvis_opening
-    if po <= -5:
-        s_po = 50.0
-    elif po >= 10:
-        s_po = 100.0
+    if po < 90:
+        s_po = 60.0
+    elif po < 120:
+        s_po = 70.0 + (po - 90) / 30.0 * 15.0    # 90–120: 70–85
+    elif po <= 150:
+        s_po = 85.0 + (po - 120) / 30.0 * 15.0   # 120–150: 85–100
     else:
-        s_po = 70.0 + (po + 5) / (10 + 5) * 25.0
+        s_po = 100.0
     scores["pelvis_opening"] = float(np.clip(s_po, 0, 100))
 
-    # 5) 助跳前腿膝角（适度弯曲）
+    # 4) back_knee_min：145~180 (越大越好)
+    bk = m.back_knee_min
+    if bk < 145:
+        s_bk = 60.0
+    elif bk < 160:
+        s_bk = 70.0 + (bk - 145) / 15.0 * 15.0   # 145–160: 70–85
+    elif bk <= 175:
+        s_bk = 85.0 + (bk - 160) / 15.0 * 10.0   # 160–175: 85–95
+    else:
+        s_bk = 100.0
+    scores["back_knee_min"] = float(np.clip(s_bk, 0, 100))
+
+    # 5) prep_knee_angle：起跳屈膝，100° 左右最佳
     pk = m.prep_knee_angle
     if pk >= 140:
         s_pk = 55.0
@@ -351,36 +362,46 @@ def score_grand_jete(metrics: GrandJeteMetrics) -> Dict[str, float]:
         s_pk = 95.0 - diff * 0.5
     scores["prep_knee_angle"] = float(np.clip(s_pk, 0, 100))
 
-    # 6) NEW 躯干稳定性（std 越小越好）
-    tls = m.trunk_lean_std
-    if tls >= 20.0:
-        s_tls = 50.0
-    elif tls <= 5.0:
-        s_tls = 100.0
+    # 6) front_knee_angle：150~180 (越大越好)
+    fk = m.front_knee_angle
+    if fk < 150:
+        s_fk = 60.0
+    elif fk < 165:
+        s_fk = 70.0 + (fk - 150) / 15.0 * 15.0   # 150–165: 70–85
+    elif fk <= 175:
+        s_fk = 85.0 + (fk - 165) / 10.0 * 10.0   # 165–175: 85–95
     else:
-        s_tls = 100.0 - (tls - 5.0) / (20.0 - 5.0) * 50.0
-    scores["trunk_lean_std"] = float(np.clip(s_tls, 0, 100))
+        s_fk = 100.0
+    scores["front_knee_angle"] = float(np.clip(s_fk, 0, 100))
 
-    # 7) NEW 落地膝角（约 90~110° 最佳）
-    lkf = m.landing_knee_flexion
-    if lkf == 0.0:
-        s_lkf = 50.0
+    # 7) torso_upright：0~35°（越小越直）
+    tu = m.torso_upright
+    if tu >= 35:
+        s_tu = 60.0
+    elif tu >= 25:
+        s_tu = 70.0 + (35 - tu) / 10.0 * 10.0    # 25–35: 70–80
+    elif tu >= 10:
+        s_tu = 80.0 + (25 - tu) / 15.0 * 15.0   # 10–25: 80–95
     else:
-        diff = abs(lkf - 100.0)  # 以 100° 为理想
-        s_lkf = 95.0 - diff * 0.7
-    scores["landing_knee_flexion"] = float(np.clip(s_lkf, 0, 100))
+        s_tu = 95.0 + (10 - tu) / 10.0 * 5.0    # <10: 95–100
+    scores["torso_upright"] = float(np.clip(s_tu, 0, 100))
 
-    # 8) NEW 落地躯干倾斜（越直越好）
-    ltl = abs(m.landing_trunk_lean)
-    if ltl >= 30.0:
-        s_ltl = 50.0
-    elif ltl <= 5.0:
-        s_ltl = 100.0
+    # 8) arm_line：肘角 150~180 (越接近 180 越好)
+    al = m.arm_line
+    if al == 0.0:
+        s_al = 50.0
+    elif al < 150:
+        s_al = 60.0
+    elif al < 165:
+        s_al = 70.0 + (al - 150) / 15.0 * 15.0   # 150–165: 70–85
+    elif al <= 175:
+        s_al = 85.0 + (al - 165) / 10.0 * 10.0   # 165–175: 85–95
     else:
-        s_ltl = 100.0 - (ltl - 5.0) / (30.0 - 5.0) * 50.0
-    scores["landing_trunk_lean"] = float(np.clip(s_ltl, 0, 100))
+        s_al = 100.0
+    scores["arm_line"] = float(np.clip(s_al, 0, 100))
 
     return scores
+
 
 
 def analyze_grand_jete(
@@ -398,11 +419,12 @@ def analyze_grand_jete(
     metrics_dict = {
         "flight_time": m.flight_time,
         "split_angle_max": m.split_angle_max,
-        "back_knee_min": m.back_knee_min,
         "pelvis_opening": m.pelvis_opening,
+        "back_knee_min": m.back_knee_min,
         "prep_knee_angle": m.prep_knee_angle,
-        "trunk_lean_std": m.trunk_lean_std,
-        "landing_knee_flexion": m.landing_knee_flexion,
-        "landing_trunk_lean": m.landing_trunk_lean,
+        "front_knee_angle": m.front_knee_angle,
+        "torso_upright": m.torso_upright,
+        "arm_line": m.arm_line,
     }
     return metrics_dict, scores
+
